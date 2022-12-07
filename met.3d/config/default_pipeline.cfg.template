@@ -1,0 +1,154 @@
+# Configure available memory managers.
+# =============================================================================
+
+[MemoryManager]
+size=3
+
+# Numerical weather prediction memory manager gets 32 GB system memory.
+1\name=NWP
+1\size_MB=32768
+
+# Memory manager that caches analysis results (16 MB are sufficient).
+2\name=Analysis
+2\size_MB=16
+
+# Memory manager for trajectory data.
+3\name=Trajectories
+3\size_MB=16384
+
+
+[DefaultMemoryManagers]
+# The memory managers set as "default" here will appear as defaults
+# in the "New Dataset"-dialog in Met.3D.
+defaultNWPMemoryManager=NWP
+defaultAnalysisMemoryManager=Analysis
+defaultTrajectoryMemoryManager=Trajectories
+
+
+
+# Configure data processing pipelines.
+# =============================================================================
+
+[NWPPipeline]
+size=0
+
+# Example configuration for a dataset.
+# ------------------------------------
+# Specifiy a name for the dataset.
+1\name=ECMWF DET EUR_LL015
+# Specify the directory in which the data files are stored. If you specify
+# a file filter (wildcards allowed), only those files that correspond to the
+# filter will be used.
+# Special cases:
+#  If files are distributed over multiple subdirectories, use "/" as the
+# path separator. Example: "/my_forecast.grb".
+#  For ensemble datasets that do NOT store the ensemble dimension in their 
+# NetCDF/GRIB files but instead have the ensemble member ID encoded in their 
+# file or subdirectory names (e.g., "my_forecast.004.grb" or
+# "member_004/temperature.nc"), the position of the ensemble ID can be specified
+# by placing "%m" in the file filter string. Example: "my_forecast.%m.grb" or
+# "member_%m/temperature.nc". Note: At the moment Met.3D only allows positive
+# integers as ensemble identifiers (leading zeros allowed).
+1\path=/your/path/data/mss/grid/ecmwf/netcdf
+1\fileFilter=*ecmwf_forecast*EUR_LL015*.nc
+# schedulerID can be "MultiThread" or "SingleThread".
+1\schedulerID=MultiThread
+# Specify the ID of a memory manager that is defined above.
+1\memoryManagerID=NWP
+# fileFormat can be "CF_NETCDF" or "ECMWF_GRIB".
+1\fileFormat=CF_NETCDF
+# Set enableRegridding to "true" if the regridding module should be activated.
+1\enableRegridding=false
+# Set "enableProbabilityRegionFilter" to "true" if you want to use the
+# probability region detection module.
+1\enableProbabilityRegionFilter=false
+# Set "treatRotatedGridAsRegularGrid" to "true" if you want to treat rotated
+# grids as regular grids. Setting it to false will cause rejection of data sets
+# with rotated grid coordinates.
+1\treatRotatedGridAsRegularGrid=false
+# Set "treatProjectedGridAsRegularLonLatGrid" to "true" if you want to treat projected
+# (as projected by the proj-library with, e.g., CDO)
+# grids as regular lon-lat grids. Setting it to false will cause rejection of data sets
+# with projected grid coordinates.
+1\treatProjectedGridAsRegularLonLatGrid=false
+# For ECMWF grib files only: specify type and name of the surface pressure field
+# used to reconstruct pressure for hybrid sigma-pressure coordinates.
+# Can be "sp" (surface pressure), "lnsp" (log of surface pressure) or
+# "auto" (Met.3D tries to detect the surface pressure field
+# (NOTE: this can be slow!)).
+1\gribSurfacePressureFieldType=sp
+# Set "convertGeometricHeightToPressure_ICAOStandard" to "true" to load data
+# using geometric height as vertical coordinate. Metres are converted to
+# pressure using the ICAO standard atmosphere. (NOTE: the resulting pressure is
+# hence approximate!)
+1\convertGeometricHeightToPressure_ICAOStandard=false
+# Name of an optional auxiliary 3D pressure field. Use this flag for datasets
+# whose variables require an explicit definition of grid point pressure, e.g.,
+# grids defined on (hybrid) geometric coordinates. Currently only implemented
+# for NetCDF files. Leave empty to not use any auxiliary field. Cannot be used
+# together with convertGeometricHeightToPressure_ICAOStandard.
+1\auxiliary3DPressureField=
+# Grid consistency check ensures that all variables of one dataset are defined
+# on the same grid (lons, lats, levels, etc.). Disabling it might result in
+# wrong behaviour of vertical cross-section actors (using variables defined on
+# different grids in one actor), derived variables (variables used to calculate
+# derived variables defined on different grids) and auxiliary 3D pressure fields
+# (connection to variables defined on different grids than the auxiliary
+# pressure field). Disabling can be necessary to use data that is stored on
+# staggered grids, however, in this case, the staggering will be ignored.
+# Hence, only disable if you know what you are doing.
+1\disableGridConsistencyCheck=false
+# To enable the built-in computation of derived variables (wind speed, potential
+# temperature, etc.), Met.3D needs to know which variables in this dataset
+# denote which quantity. E.g., what is the name of the eastward wind component
+# in the NetCDF files of this dataset? In the following, provide a string
+# of "/"-separated pairs "CF_standard_name:Dataset_variable_name" such as
+# "eastward_wind:u-component_of_wind_hybrid".
+1\inputVarsForDerivedVars=eastward_wind:u-component_of_wind_hybrid/northward_wind:v-component_of_wind_hybrid/air_temperature:Temperature_hybrid/specific_humidity:Specific_humidity_hybrid/surface_geopotential:Geopotential_surface/surface_air_pressure:Surface_pressure_surface/surface_temperature:2_metre_temperature_surface/lwe_thickness_of_precipitation_amount:Total_precipitation_surface
+
+# Example configuration for an ensemble ECMWF CF-NetCDF dataset.
+2\name=ECMWF ENS EUR_LL10
+2\path=/your/path/data/mss/grid/ecmwf/netcdf
+2\fileFilter=*ecmwf_ensemble_forecast*EUR_LL10*.nc
+2\schedulerID=MultiThread
+2\memoryManagerID=NWP
+2\fileFormat=CF_NETCDF
+
+3\name=YOUR CF DATASET
+3\path=/your/path/data/mss/grid/generic/netcdf
+3\fileFilter=*
+3\schedulerID=MultiThread
+3\memoryManagerID=NWP
+3\fileFormat=CF_NETCDF
+
+
+[TrajectoriesPipeline]
+size=0
+
+1\name=Precomputed Trajectories
+1\ensemble=true
+1\path=/your/path/data/trajectories/EUR_LL10/psfc_1000hPa_L62
+# Trajectories started in the atmospheric boundary layer? (only for WCB
+# detection via probability regions).
+1\ABLTrajectories=false
+1\schedulerID=MultiThread
+1\memoryManagerID=Trajectories
+1\precomputed=true
+
+2\name=Trajectories computed in Met.3D
+2\ensemble=true
+2\ABLTrajectories=false
+2\schedulerID=MultiThread
+2\memoryManagerID=Trajectories
+2\precomputed=false
+2\NWPDataset=ECMWF ENS EUR_LL10
+2\eastwardWind_ms=u-component_of_wind_hybrid
+2\northwardWind_ms=v-component_of_wind_hybrid
+2\verticalWind_Pas=Vertical_velocity_pressure_hybrid
+# [Optional] Vertical level type of input wind component variables. Can be 
+# "PRESSURE_LEVELS_3D", "HYBRID_SIGMA_PRESSURE_3D", "LOG_PRESSURE_LEVELS_3D" or
+# "AUXILIARY_PRESSURE_3D". If vertical level type is not given, Met.3D will
+# search for one vertical level type containing the names of eastwardWind_ms,
+# northwardWind_ms and verticalWind_Pas variables.
+2\windComponentVariablesVerticalLevelType=
+
