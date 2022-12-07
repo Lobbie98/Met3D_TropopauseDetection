@@ -1,0 +1,281 @@
+/******************************************************************************
+**
+**  This file is part of Met.3D -- a research environment for the
+**  three-dimensional visual exploration of numerical ensemble weather
+**  prediction data.
+**
+**  Copyright 2015-2021 Marc Rautenhaus [*, until 2018 +]
+**  Copyright 2017-2018 Bianca Tost [+]
+**
+**  * Regional Computing Center, Visual Data Analysis Group
+**  Universitaet Hamburg, Hamburg, Germany
+**
+**  + Computer Graphics and Visualization Group
+**  Technische Universitaet Muenchen, Garching, Germany
+**
+**  Met.3D is free software: you can redistribute it and/or modify
+**  it under the terms of the GNU General Public License as published by
+**  the Free Software Foundation, either version 3 of the License, or
+**  (at your option) any later version.
+**
+**  Met.3D is distributed in the hope that it will be useful,
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+**  GNU General Public License for more details.
+**
+**  You should have received a copy of the GNU General Public License
+**  along with Met.3D.  If not, see <http://www.gnu.org/licenses/>.
+**
+******************************************************************************/
+
+/*****************************************************************************
+ ***                             CONSTANTS
+ *****************************************************************************/
+
+const float MISSING_VALUE = -999.E9;
+
+// Vertical level type; see structuredgrid.h.
+const int SURFACE_2D = 0;
+const int PRESSURE_LEVELS_3D = 1;
+const int HYBRID_SIGMA_PRESSURE_3D = 2;
+const int POTENTIAL_VORTICITY_2D = 3;
+const int LOG_PRESSURE_LEVELS_3D = 4;
+const int AUXILIARY_PRESSURE_3D = 5;
+
+
+/*****************************************************************************
+ ***                             INTERFACES
+ *****************************************************************************/
+
+interface VStoFS
+{
+    smooth float  scalar;  // the scalar data that this vertex holds,
+                           // the value shall be perspectively correct
+                           // interpolated to the fragment shader
+//TODO: is there a more elegant way to do this?
+    smooth float  flag;    // if this flag is set to < 0, the fragment
+                           // shader should discard the fragment
+    smooth float  worldZ;  // worldZ coordinate to test for
+                           // vertical section bounds in the frag shader
+};
+
+
+/*****************************************************************************
+ ***                           VERTEX SHADER
+ *****************************************************************************/
+
+uniform int       levelType;         // vertical level type of the data grid
+uniform sampler1D lonLatLevAxes;     // 1D texture that holds both lon and lat
+uniform int       latOffset;         // index at which lat data starts
+uniform sampler3D dataField;         // 3D texture holding the scalar data
+uniform sampler2D surfacePressure;   // surface pressure field in Pa
+uniform sampler1D hybridCoefficients;// hybrid sigma pressure coefficients
+uniform sampler3D auxPressureField_hPa; // 3D pressure field in hPa
+uniform sampler1D path;              // points along the vertical section path
+uniform vec2      pToWorldZParams;   // parameters to convert p[hPa] to world z
+uniform mat4      mvpMatrix;         // model-view-projection
+uniform float deltaLon; // space between two grid cells in lon in world space
+uniform float deltaLat; // space between two grid cells in lat in world space
+uniform vec3 dataNWCrnr; // data boundaries in NW
+uniform bool gridIsCyclicInLongitude;
+
+layout(rg32f)
+uniform image2D   targetGrid;
+uniform bool      fetchFromTarget;   // do not compute the scalar from the data
+                                     // field; fetch it from the target grid
+                                     // instead
+
+
+shader VSmain(out VStoFS outStruct)
+{
+    // m = index of point in "path" (horizontal dimension); k = index of model
+    // level (vertical dimension).
+    int m = bool(gl_VertexID & 1) ? (gl_InstanceID + 1) : gl_InstanceID;
+    int k = int(gl_VertexID / 2);
+
+    float lon  = texelFetch(path, 2*m    , 0).a;
+    float lat  = texelFetch(path, 2*m + 1, 0).a;
+
+    if (fetchFromTarget)
+    {
+        // The vertical section stored in the texture "targetGrid" can be
+        // reused -- no need to perform the more expensive computations to
+        // interpolate from the original 3D data field.
+        // NOTE: imageLoad requires "targetGrid" to be defined with the
+        // layout qualifier, otherwise an error "..no overload function can
+        // be found: imageLoad(struct image2D, ivec2).." is raised.
+        vec4 data = imageLoad(targetGrid, ivec2(m,k));
+
+        if (data.r == MISSING_VALUE)
+        {
+            gl_Position = mvpMatrix * vec4(lon, lat, 0, 1);
+            outStruct.scalar = 0.;
+            outStruct.flag = -100.;
+            return;
+        }
+
+        // The scalar value is stored in the "R" channel, ..
+        outStruct.scalar = data.r;
+        // .. the log(p) coordinate in the "G" channel.
+        outStruct.worldZ = (data.g - pToWorldZParams.x) * pToWorldZParams.y;
+        gl_Position = mvpMatrix * vec4(lon, lat, outStruct.worldZ, 1);
+        outStruct.flag = 0.;
+        return;
+    }
+
+    // Determine the indices to fetch surface pressure and data values.
+    float mixI = mod(lon - dataNWCrnr.x, 360.) / deltaLon;
+    float mixJ = (dataNWCrnr.y - lat) / deltaLat;
+    int i = int(mixI);
+    int j = int(mixJ);
+    mixI = fract(mixI);
+    mixJ = fract(mixJ);
+
+    int numLons = textureSize(dataField, 0).x;
+    int numLats = textureSize(dataField, 0).y;
+    int i1 = i+1;
+    if (gridIsCyclicInLongitude) i1 %= numLons;
+    int j1 = j+1;
+
+    // Check if we are inside the model domain. If not, flag output and exit.
+    if (i1 < 0 || i1 >= numLons || j1 < 0 || j1 >= numLats)
+    {
+        gl_Position = mvpMatrix * vec4(lon, lat, 0, 1);
+        outStruct.scalar = 0.;
+        outStruct.flag = -100.;
+        imageStore(targetGrid, ivec2(m, k), vec4(MISSING_VALUE, 0, 0, 0));
+        return;
+    }
+
+    float p_hPa = 1050.;
+    if (levelType == HYBRID_SIGMA_PRESSURE_3D)
+    {   
+        // The hybridCoefficients texture contains both the ak and bk coefficients,
+        // hence the number of levels is half the size of this array.
+        int numberOfLevels = textureSize(hybridCoefficients, 0) / 2;
+        float ak = texelFetch(hybridCoefficients, k, 0).a;
+        float bk = texelFetch(hybridCoefficients, k+numberOfLevels, 0).a;
+
+        // Compute the pressure at the four grid points surrounding (lon/lat).
+        float p_i0j0 =
+                ak + bk * texelFetch(surfacePressure, ivec2(i , j ), 0).a / 100.;
+        float p_i1j0 =
+                ak + bk * texelFetch(surfacePressure, ivec2(i1, j ), 0).a / 100.;
+        float p_i0j1 =
+                ak + bk * texelFetch(surfacePressure, ivec2(i , j1), 0).a / 100.;
+        float p_i1j1 =
+                ak + bk * texelFetch(surfacePressure, ivec2(i1, j1), 0).a / 100.;
+
+        // Interpolate to get the pressure at (lon/lat).
+        float p_j0  = mix(p_i0j0, p_i1j0, mixI);
+        float p_j1  = mix(p_i0j1, p_i1j1, mixI);
+        p_hPa = mix(p_j0  , p_j1  , mixJ);
+    }
+    else if (levelType == PRESSURE_LEVELS_3D)
+    {
+        int numLats = textureSize(dataField, 0).y;
+        int vertOffset = numLons + numLats;
+        p_hPa = texelFetch(lonLatLevAxes, k + vertOffset, 0).a;
+    }
+    else if (levelType == AUXILIARY_PRESSURE_3D)
+    {
+        // Compute the pressure at the four grid points surrounding (lon/lat).
+        float p_i0j0 = texelFetch(auxPressureField_hPa, ivec3(i , j , k), 0).a;
+        float p_i1j0 = texelFetch(auxPressureField_hPa, ivec3(i1, j , k), 0).a;
+        float p_i0j1 = texelFetch(auxPressureField_hPa, ivec3(i , j1, k), 0).a;
+        float p_i1j1 = texelFetch(auxPressureField_hPa, ivec3(i1, j1, k), 0).a;
+
+        // Interpolate to get the pressure at (lon/lat).
+        float p_j0  = mix(p_i0j0, p_i1j0, mixI);
+        float p_j1  = mix(p_i0j1, p_i1j1, mixI);
+        p_hPa = mix(p_j0  , p_j1  , mixJ);
+    }
+    
+    // Convert pressure to world Z coordinate to get the vertex positon.
+    float log_p = log(p_hPa);
+    outStruct.worldZ = (log_p - pToWorldZParams.x) * pToWorldZParams.y;
+    vec3 vertexPosition = vec3(lon, lat, outStruct.worldZ);
+
+    // Convert the position from world to clip space.
+    gl_Position = mvpMatrix * vec4(vertexPosition, 1);
+
+    // Fetch the scalar values at the four surrounding grid points and
+    // interpolate to (lon/lat), similar to the pressure.
+    float scalar_i0j0 = texelFetch(dataField, ivec3(i , j , k), 0).a;
+    float scalar_i1j0 = texelFetch(dataField, ivec3(i1, j , k), 0).a;
+    float scalar_i0j1 = texelFetch(dataField, ivec3(i , j1, k), 0).a;
+    float scalar_i1j1 = texelFetch(dataField, ivec3(i1, j1, k), 0).a;
+
+    float scalar_j0 = mix(scalar_i0j0, scalar_i1j0, mixI);
+    float scalar_j1 = mix(scalar_i0j1, scalar_i1j1, mixI);
+    outStruct.scalar   = mix(scalar_j0, scalar_j1, mixJ);
+
+    // Store the computed vertex (= grid point) scalar value and worldZ
+    // coordinate into the texture "targetGrid" for further processing (e.g.
+    // contouring, CPU read-back).
+    imageStore(targetGrid, ivec2(m, k), vec4(outStruct.scalar, log_p, 0, 0));
+
+    // If we have arrived here, the vertex is inside the domain. Set flag to 0,
+    // so that all fragments resulting from this vertex are kept by the fragment
+    // shader.
+    outStruct.flag = 0.;
+}
+
+
+/*****************************************************************************
+ ***                          FRAGMENT SHADER
+ *****************************************************************************/
+
+uniform sampler1D transferFunction; // 1D transfer function
+uniform float     scalarMinimum;    // min/max data values to scale to 0..1
+uniform float     scalarMaximum;
+uniform vec2      verticalBounds;   // lower and upper bound of this section. If
+                                    // worldZ is outside this interval discard
+                                    // the fragment.
+uniform float     opacity;          // Multiply the colour obtained from the
+                                    // transfer function with this alpha value
+
+
+shader FSmain(in VStoFS inStruct, out vec4 fragColour)
+{
+    // Discard the element if it is outside the model domain (no scalar value).
+    if (inStruct.flag < 0.) discard;
+
+    // Also discard if the fragment is outside the vertical bounds of the section.
+    if ((inStruct.worldZ < verticalBounds.x) || (inStruct.worldZ > verticalBounds.y)) discard;
+
+    // Scale the scalar range to 0..1.
+    float scalar_ = (inStruct.scalar - scalarMinimum) / (scalarMaximum - scalarMinimum);
+
+    // Fetch colour from the transfer function and apply shading term.
+    fragColour = texture(transferFunction, scalar_);
+    fragColour = vec4(fragColour.rgb, fragColour.a * opacity);
+}
+
+
+shader FSdoNotRender(in VStoFS inStruct, out vec4 fragColour)
+{    
+    // Discard fragments since otherwise transparent fragments would be "drawn"
+    // and would write to the depth buffer. Because of that variables of the
+    // same actor that are visible but drawn afterwards would fail the depth
+    // test and thus wouldn't be drawn.
+    discard;
+}
+
+
+/*****************************************************************************
+ ***                             PROGRAMS
+ *****************************************************************************/
+
+program Standard
+{
+    vs(420)=VSmain();
+    fs(420)=FSmain();
+};
+
+
+program OnlyUpdateTargetGrid
+{
+    vs(420)=VSmain();
+    fs(420)=FSdoNotRender();
+};
