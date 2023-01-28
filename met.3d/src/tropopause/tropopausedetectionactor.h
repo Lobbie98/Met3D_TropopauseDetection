@@ -100,6 +100,8 @@ private:
     void renderToCurrentContext(MSceneViewGLWidget *sceneView) override;
 
     void renderTropopauseSurfaceOIT(MSceneViewGLWidget *sceneView);//TODO: sehr viel Funktion umbauen?
+    
+    void renderTransparencyToCurrentContext(MSceneViewGLWidget *sceneView) override;
 
     void triggerAsynchronousTropopauseRequest();
 
